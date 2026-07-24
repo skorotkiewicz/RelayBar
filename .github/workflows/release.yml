@@ -41,8 +41,9 @@ jobs:
         run: |
           ref="${GITHUB_REF_NAME//\//-}"
           artifact="relaybar-rs-${ref}-x86_64-unknown-linux-gnu"
-          mkdir "$artifact"
-          cp target/release/relaybar-rs README.md "$artifact/"
+          mkdir -p "$artifact/assets"
+          cp target/release/relaybar-rs README.md LICENSE "$artifact/"
+          cp assets/relaybar.desktop "$artifact/assets/"
           tar -czf "$artifact.tar.gz" "$artifact"
 
       - uses: actions/upload-artifact@v4

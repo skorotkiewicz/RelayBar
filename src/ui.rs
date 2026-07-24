@@ -1,6 +1,12 @@
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::mpsc::{self, Sender},
+    time::Duration,
+};
 
 use gtk::{gdk, gio, glib, pango, prelude::*};
+use ksni::blocking::TrayMethods;
 use uuid::Uuid;
 
 use crate::{
@@ -31,6 +37,75 @@ window { background: #17191d; }
 
 type SharedStore = Rc<RefCell<Store>>;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TrayCommand {
+    ShowOrHide,
+    Quit,
+}
+
+struct RelayTray {
+    commands: Sender<TrayCommand>,
+    running_count: usize,
+}
+
+impl ksni::Tray for RelayTray {
+    fn id(&self) -> String {
+        "relaybar-rs".into()
+    }
+
+    fn title(&self) -> String {
+        match self.running_count {
+            0 => "RelayBar".into(),
+            1 => "RelayBar · 1 active".into(),
+            count => format!("RelayBar · {count} active"),
+        }
+    }
+
+    fn icon_name(&self) -> String {
+        "network-server".into()
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.commands.send(TrayCommand::ShowOrHide);
+    }
+
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::{MenuItem, StandardItem};
+
+        vec![
+            StandardItem {
+                label: match self.running_count {
+                    0 => "No active tunnels".into(),
+                    1 => "1 active tunnel".into(),
+                    count => format!("{count} active tunnels"),
+                },
+                enabled: false,
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: "Show / hide RelayBar".into(),
+                icon_name: "window-new".into(),
+                activate: Box::new(|tray: &mut Self| {
+                    let _ = tray.commands.send(TrayCommand::ShowOrHide);
+                }),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "Quit".into(),
+                icon_name: "application-exit".into(),
+                activate: Box::new(|tray: &mut Self| {
+                    let _ = tray.commands.send(TrayCommand::Quit);
+                }),
+                ..Default::default()
+            }
+            .into(),
+        ]
+    }
+}
+
 pub fn build(app: &gtk::Application) {
     if let Some(window) = app.active_window() {
         window.present();
@@ -49,21 +124,70 @@ pub fn build(app: &gtk::Application) {
     render(&window, &state);
     window.present();
 
+    let (tray_sender, tray_commands) = mpsc::channel();
+    let initial_running_count = state.borrow().running_count();
+    let tray_handle = match (RelayTray {
+        commands: tray_sender,
+        running_count: initial_running_count,
+    })
+    .spawn()
+    {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            eprintln!("RelayBar tray unavailable: {error}");
+            None
+        }
+    };
+    if tray_handle.is_some() {
+        window.connect_close_request(|window| {
+            window.hide();
+            glib::Propagation::Stop
+        });
+    }
+
     let weak_window = window.downgrade();
     let state_for_tick = state.clone();
+    let tray_for_tick = tray_handle.clone();
+    let app_for_tick = app.clone();
+    let mut tray_running_count = initial_running_count;
     glib::timeout_add_local(Duration::from_millis(100), move || {
         let Some(window) = weak_window.upgrade() else {
             return glib::ControlFlow::Break;
         };
+        while let Ok(command) = tray_commands.try_recv() {
+            match command {
+                TrayCommand::ShowOrHide => {
+                    if window.is_visible() {
+                        window.hide();
+                    } else {
+                        window.present();
+                    }
+                }
+                TrayCommand::Quit => app_for_tick.quit(),
+            }
+        }
+
         let tick = state_for_tick.borrow_mut().tick();
         let action_changed = run_actions(&state_for_tick, tick.actions);
+        let running_count = state_for_tick.borrow().running_count();
+        if running_count != tray_running_count {
+            if let Some(handle) = &tray_for_tick {
+                handle.update(|tray| tray.running_count = running_count);
+            }
+            tray_running_count = running_count;
+        }
         if tick.changed || action_changed {
             render(&window, &state_for_tick);
         }
         glib::ControlFlow::Continue
     });
 
-    app.connect_shutdown(move |_| state.borrow_mut().shutdown());
+    app.connect_shutdown(move |_| {
+        state.borrow_mut().shutdown();
+        if let Some(handle) = &tray_handle {
+            handle.shutdown().wait();
+        }
+    });
 }
 
 fn install_css() {
@@ -540,4 +664,22 @@ fn entry(placeholder: &str) -> gtk::Entry {
 
 fn left_label(text: &str) -> gtk::Label {
     gtk::Label::builder().label(text).xalign(0.0).build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_reports_activity_and_sends_commands() {
+        let (sender, receiver) = mpsc::channel();
+        let mut tray = RelayTray {
+            commands: sender,
+            running_count: 2,
+        };
+
+        assert_eq!(ksni::Tray::title(&tray), "RelayBar · 2 active");
+        ksni::Tray::activate(&mut tray, 0, 0);
+        assert_eq!(receiver.recv().unwrap(), TrayCommand::ShowOrHide);
+    }
 }
