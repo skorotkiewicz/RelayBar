@@ -27,6 +27,7 @@ pub struct Tick {
 struct Runtime {
     generation: u64,
     started_at: Instant,
+    stop_requested: bool,
     stop: Sender<()>,
     worker: JoinHandle<()>,
 }
@@ -133,7 +134,7 @@ impl Store {
     }
 
     pub fn start(&mut self, id: Uuid) {
-        if self.desired.contains(&id) || self.runtimes.contains_key(&id) {
+        if self.desired.contains(&id) {
             return;
         }
         let Some(tunnel) = self.tunnels.iter().find(|tunnel| tunnel.id == id) else {
@@ -151,7 +152,11 @@ impl Store {
         self.retry_deadlines.remove(&id);
         self.desired.insert(id);
         self.retry_attempts.insert(id, 0);
-        self.launch(id);
+        if self.runtimes.contains_key(&id) {
+            self.phases.insert(id, TunnelPhase::Starting);
+        } else {
+            self.launch(id);
+        }
     }
 
     pub fn open_in_browser(&mut self, id: Uuid) -> Vec<Action> {
@@ -185,7 +190,8 @@ impl Store {
         self.retry_deadlines.remove(&id);
         self.pending_browser.remove(&id);
         self.phases.insert(id, TunnelPhase::Stopped);
-        if let Some(runtime) = self.runtimes.get(&id) {
+        if let Some(runtime) = self.runtimes.get_mut(&id) {
+            runtime.stop_requested = true;
             let _ = runtime.stop.send(());
         }
     }
@@ -315,6 +321,7 @@ impl Store {
             Runtime {
                 generation,
                 started_at: Instant::now(),
+                stop_requested: false,
                 stop,
                 worker,
             },
@@ -330,13 +337,20 @@ impl Store {
         {
             return false;
         }
-        self.runtimes.remove(&event.id);
+        let stop_requested = self
+            .runtimes
+            .remove(&event.id)
+            .is_some_and(|runtime| runtime.stop_requested);
         if !self.desired.contains(&event.id) {
             if self.tunnels.iter().any(|tunnel| tunnel.id == event.id) {
                 self.phases.insert(event.id, TunnelPhase::Stopped);
             } else {
                 self.phases.remove(&event.id);
             }
+            return true;
+        }
+        if stop_requested {
+            self.launch(event.id);
             return true;
         }
 
@@ -460,5 +474,44 @@ mod tests {
         let loaded: Vec<Tunnel> = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(loaded, [tunnel]);
         let _ = fs::remove_file(path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn starts_and_stops_child_process() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!("relaybar-{}.json", Uuid::new_v4()));
+        let executable = path.with_extension("sh");
+        fs::write(&executable, "#!/bin/sh\nexec sleep 60\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut store = Store::load(path.clone());
+        store.ssh_executable = executable.clone();
+        let tunnel = Tunnel::new(
+            "Process test".into(),
+            43_210,
+            "localhost".into(),
+            80,
+            "host".into(),
+        );
+        let id = tunnel.id;
+        store.add(tunnel);
+        store.start(id);
+        thread::sleep(Duration::from_millis(500));
+        store.tick();
+        assert_eq!(store.phase(id), TunnelPhase::Running);
+
+        store.stop(id);
+        for _ in 0..20 {
+            store.tick();
+            if !store.runtimes.contains_key(&id) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(store.phase(id), TunnelPhase::Stopped);
+        assert!(!store.runtimes.contains_key(&id));
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(executable);
     }
 }
