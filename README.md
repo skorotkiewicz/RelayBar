@@ -20,7 +20,7 @@ You need Rust and the GTK 4 development files.
 
 ```sh
 cargo install --git https://github.com/skorotkiewicz/RelayBar --locked
-relaybar-rs
+relaybar
 ```
 
 ## Desktop entry

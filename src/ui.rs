@@ -50,7 +50,7 @@ struct RelayTray {
 
 impl ksni::Tray for RelayTray {
     fn id(&self) -> String {
-        "relaybar-rs".into()
+        "relaybar".into()
     }
 
     fn title(&self) -> String {

@@ -2,7 +2,7 @@
 Type=Application
 Name=RelayBar
 Comment=Manage SSH local port forwards
-Exec=relaybar-rs
+Exec=relaybar
 Icon=network-server
 Terminal=false
 Categories=Network;
