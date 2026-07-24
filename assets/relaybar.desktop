@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=RelayBar
+Comment=Manage SSH local port forwards
+Exec=relaybar-rs
+Icon=network-server
+Terminal=false
+Categories=Network;
+Keywords=SSH;Tunnel;Port Forward;
+StartupNotify=true

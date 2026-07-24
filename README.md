@@ -23,6 +23,16 @@ cargo install --git https://github.com/skorotkiewicz/RelayBar --locked
 relaybar-rs
 ```
 
+## Desktop entry
+
+From a repository checkout, add RelayBar to your application menu with:
+
+```sh
+desktop_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+install -Dm644 assets/relaybar.desktop "$desktop_dir/relaybar.desktop"
+update-desktop-database "$desktop_dir"
+```
+
 ## Development
 
 ```sh
