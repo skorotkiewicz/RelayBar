@@ -1,6 +1,2 @@
-.build/
-.DS_Store
-*.xcuserstate
-*.xcarchive
-DerivedData/
-xcuserdata/
+/target
+/resources
