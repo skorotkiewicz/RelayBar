@@ -12,23 +12,19 @@ RelayBar imports the tunnel, saves it, and lets you start or stop it from the wi
 
 RelayBar runs `/usr/bin/ssh` directly. It does not invoke a shell, and imported SSH options are checked against a small allowlist.
 
-## Run
+## Install
 
 You need Rust and the GTK 4 development files.
 
 ```sh
-cargo run --release
+cargo install --git https://github.com/skorotkiewicz/RelayBar --locked
+relaybar-rs
 ```
 
-Or with `just`:
+## Development
 
 ```sh
 just run
-```
-
-## Test
-
-```sh
 just test
 ```
 
