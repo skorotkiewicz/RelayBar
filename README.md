@@ -2,6 +2,8 @@
 
 A small GTK app for keeping SSH local forwards in one place.
 
+![RelayBar tunnel list and editor](assets/screenshot.png)
+
 Paste a command such as:
 
 ```sh
