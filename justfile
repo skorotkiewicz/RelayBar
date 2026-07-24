@@ -35,6 +35,11 @@ remove-hook:
 add-tag:
     #!/usr/bin/env bash
     set -euo pipefail
+    cargo check --locked --all-features
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "Working tree must be clean before tagging."
+        exit 1
+    fi
     VERSION=$(grep '^version' Cargo.toml | head -1 | cut -d'"' -f2)
     git push origin main
     git tag -a "v${VERSION}" -m "Release v${VERSION}"
