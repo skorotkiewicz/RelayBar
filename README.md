@@ -16,6 +16,14 @@ RelayBar runs `/usr/bin/ssh` directly. It does not invoke a shell, and imported 
 
 ## Install
 
+### Arch Linux
+
+```sh
+yay -S relaybar-bin
+```
+
+### Cargo
+
 You need Rust and the GTK 4 development files.
 
 ```sh
