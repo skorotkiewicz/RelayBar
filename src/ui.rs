@@ -360,6 +360,13 @@ fn tunnel_row(
     });
     row.append(&open);
 
+    let copy = gtk::Button::with_label("Copy");
+    // let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
+    copy.set_tooltip_text(Some("Copy SSH command"));
+    let command = tunnel.ssh_command();
+    copy.connect_clicked(move |button| button.clipboard().set_text(&command));
+    row.append(&copy);
+
     let edit = gtk::Button::with_label("Edit");
     let edit_state = state.clone();
     let edit_window = window.clone();
@@ -569,9 +576,6 @@ fn show_editor(parent: &gtk::ApplicationWindow, state: &SharedStore, existing: O
 
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     actions.set_halign(gtk::Align::End);
-    let copy = gtk::Button::with_label("Copy SSH");
-    copy.set_tooltip_text(Some("Copy SSH command from the current fields"));
-    actions.append(&copy);
     let cancel = gtk::Button::with_label("Cancel");
     let editor_for_cancel = editor.clone();
     cancel.connect_clicked(move |_| editor_for_cancel.close());
@@ -589,7 +593,7 @@ fn show_editor(parent: &gtk::ApplicationWindow, state: &SharedStore, existing: O
     let parent_for_save = parent.clone();
     let editor_for_save = editor.clone();
     let state_for_save = state.clone();
-    let read_tunnel = Rc::new(move || {
+    let read_tunnel = move || {
         let local = local_port
             .text()
             .parse::<u16>()
@@ -629,13 +633,7 @@ fn show_editor(parent: &gtk::ApplicationWindow, state: &SharedStore, existing: O
         tunnel.bind_address = bind_address;
         tunnel.additional_arguments = additional_arguments;
         Some(tunnel)
-    });
-    let read_for_copy = read_tunnel.clone();
-    copy.connect_clicked(move |button| {
-        if let Some(tunnel) = read_for_copy() {
-            button.clipboard().set_text(&tunnel.ssh_command());
-        }
-    });
+    };
     save.connect_clicked(move |_| {
         let Some(tunnel) = read_tunnel() else {
             return;
@@ -764,94 +762,17 @@ mod tests {
                     buttons.push(button);
                 }
             }
-            assert!(
-                buttons
-                    .iter()
-                    .all(|button| button.label().as_deref() != Some("Copy SSH"))
-            );
-            for existing in [None, Some(tunnel.clone())] {
-                let mut expected = existing.clone().unwrap_or_else(|| {
-                    Tunnel::new(String::new(), 8080, "localhost".into(), 80, "host".into())
-                });
-                show_editor(&window, &state, existing);
-                let editor = gtk::Window::list_toplevels()
-                    .into_iter()
-                    .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
-                    .find(|window| {
-                        matches!(
-                            window.title().as_deref(),
-                            Some("New Tunnel" | "Edit Tunnel")
-                        )
-                    })
-                    .unwrap();
-                let root = editor.child().unwrap();
-                let actions = root.last_child().unwrap();
-                let copy = actions
-                    .first_child()
-                    .unwrap()
-                    .downcast::<gtk::Button>()
-                    .unwrap();
-                assert_eq!(copy.label().as_deref(), Some("Copy SSH"));
-                let grid =
-                    std::iter::successors(root.first_child(), |widget| widget.next_sibling())
-                        .find_map(|widget| widget.downcast::<gtk::Grid>().ok())
-                        .unwrap();
-                let ssh_host = grid
-                    .child_at(1, 1)
-                    .unwrap()
-                    .downcast::<gtk::Entry>()
-                    .unwrap();
-                let local_port = grid
-                    .child_at(1, 2)
-                    .unwrap()
-                    .downcast::<gtk::Entry>()
-                    .unwrap();
-                let destination_host = grid
-                    .child_at(1, 3)
-                    .unwrap()
-                    .downcast::<gtk::Entry>()
-                    .unwrap();
-                let destination_port = grid
-                    .child_at(1, 4)
-                    .unwrap()
-                    .downcast::<gtk::Entry>()
-                    .unwrap();
-                let error = actions
-                    .prev_sibling()
-                    .unwrap()
-                    .downcast::<gtk::Label>()
-                    .unwrap();
-
-                copy.clipboard().set_text("unchanged");
-                local_port.set_text("0");
-                copy.emit_clicked();
-                assert!(error.is_visible());
-                let unchanged = glib::MainContext::default()
-                    .block_on(copy.clipboard().read_text_future())
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(unchanged.as_str(), "unchanged");
-
-                ssh_host.set_text("ops@updated-host");
-                local_port.set_text("9090");
-                destination_host.set_text("::1");
-                destination_port.set_text("3000");
-                expected.ssh_host = "ops@updated-host".into();
-                expected.local_port = 9090;
-                expected.destination_host = "::1".into();
-                expected.destination_port = 3000;
-                copy.emit_clicked();
-                let copied = glib::MainContext::default()
-                    .block_on(copy.clipboard().read_text_future())
-                    .unwrap()
-                    .unwrap();
-                assert_eq!(copied.as_str(), expected.ssh_command());
-                assert!(!error.is_visible());
-                assert!(editor.is_visible());
-                assert_eq!(state.borrow().tunnels, [tunnel.clone()]);
-                assert_eq!(Store::load(path.clone()).tunnels, [tunnel.clone()]);
-                editor.close();
-            }
+            let copy = buttons
+                .iter()
+                .find(|button| button.label().as_deref() == Some("Copy"))
+                .unwrap();
+            assert_eq!(copy.tooltip_text().as_deref(), Some("Copy SSH command"));
+            copy.emit_clicked();
+            let copied = glib::MainContext::default()
+                .block_on(copy.clipboard().read_text_future())
+                .unwrap()
+                .unwrap();
+            assert_eq!(copied.as_str(), tunnel.ssh_command());
 
             let delete = buttons
                 .iter()
