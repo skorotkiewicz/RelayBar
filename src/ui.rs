@@ -525,8 +525,8 @@ fn show_editor(parent: &gtk::ApplicationWindow, state: &SharedStore, existing: O
         } else {
             "New Tunnel"
         })
-        .default_width(500)
-        .default_height(560)
+        .default_width(420)
+        .default_height(460)
         .modal(true)
         .transient_for(parent)
         .build();
