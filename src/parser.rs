@@ -49,7 +49,7 @@ impl fmt::Display for ParseError {
             }
             Self::UnsafeOption(option) => write!(
                 formatter,
-                "{option} is blocked because it can execute commands or access arbitrary files."
+                "{option} is not allowed by RelayBar's SSH option policy."
             ),
             Self::RemoteCommand => {
                 write!(
@@ -277,6 +277,18 @@ mod tests {
             tunnel.additional_arguments,
             ["-p", "2222", "-o", "ConnectTimeout=5"]
         );
+    }
+
+    #[test]
+    fn imports_previously_copied_runtime_options() {
+        let copied = "ssh '-N' '-T' '-o' 'BatchMode=yes' '-o' 'ConnectTimeout=10' '-o' 'ExitOnForwardFailure=yes' '-o' 'ServerAliveInterval=30' '-o' 'ServerAliveCountMax=3' '-L' '7199:127.0.0.1:7199' 'mod@ml'";
+        let imported = parse(copied).unwrap();
+        assert!(crate::model::are_additional_arguments_safe(
+            &imported.additional_arguments
+        ));
+        for option in ["-o ExitOnForwardFailure=yes", "-oExitOnForwardFailure=yes"] {
+            assert!(parse(&format!("ssh {option} -L 7199:127.0.0.1:7199 mod@ml")).is_ok());
+        }
     }
 
     #[test]

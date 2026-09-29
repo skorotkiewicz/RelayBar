@@ -11,6 +11,7 @@ const ALLOWED_OPENSSH_OPTIONS: &[&str] = &[
     "compression",
     "connectionattempts",
     "connecttimeout",
+    "exitonforwardfailure",
     "hostkeyalgorithms",
     "identitiesonly",
     "ipqos",
@@ -132,13 +133,22 @@ impl Tunnel {
     }
 
     pub fn ssh_command(&self) -> String {
-        let arguments = self
-            .ssh_arguments()
-            .iter()
+        let arguments = ["-N".into(), "-L".into(), self.forward_spec()]
+            .into_iter()
+            .chain(self.additional_arguments.clone())
+            .chain([self.ssh_host.clone()])
             .map(|argument| {
-                gtk::glib::shell_quote(argument)
-                    .to_string_lossy()
-                    .into_owned()
+                if !argument.is_empty()
+                    && argument
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&byte))
+                {
+                    argument
+                } else {
+                    gtk::glib::shell_quote(argument)
+                        .to_string_lossy()
+                        .into_owned()
+                }
             })
             .collect::<Vec<_>>()
             .join(" ");
@@ -271,6 +281,20 @@ mod tests {
     }
 
     #[test]
+    fn copies_a_concise_importable_command() {
+        let tunnel = Tunnel::new(
+            String::new(),
+            7199,
+            "127.0.0.1".into(),
+            7199,
+            "mod@ml".into(),
+        );
+        assert_eq!(tunnel.ssh_command(), "ssh -N -L 7199:127.0.0.1:7199 mod@ml");
+        let imported = crate::parser::parse(&tunnel.ssh_command()).unwrap();
+        assert_eq!(imported.additional_arguments, tunnel.additional_arguments);
+    }
+
+    #[test]
     fn copied_command_preserves_arguments_without_shell_expansion() {
         let mut tunnel = tunnel(Some("[::1]"));
         tunnel.additional_arguments = vec![
@@ -278,16 +302,44 @@ mod tests {
             "/tmp/key with 'quotes' $(touch unwanted); $HOME\\key".into(),
             "-p".into(),
             "2222".into(),
+            "-o".into(),
+            "ExitOnForwardFailure=yes".into(),
+            "-oConnectTimeout=5".into(),
+            "-J".into(),
+            "ops@jump-host".into(),
         ];
         let command = tunnel.ssh_command();
         assert!(command.starts_with("ssh "));
         assert!(command.contains("'\\''quotes'\\''"));
         let parsed = gtk::glib::shell_parse_argv(&command).unwrap();
-        let expected: Vec<std::ffi::OsString> = std::iter::once("ssh".to_owned())
-            .chain(tunnel.ssh_arguments())
-            .map(Into::into)
-            .collect();
+        let expected: Vec<std::ffi::OsString> = [
+            "ssh".into(),
+            "-N".into(),
+            "-L".into(),
+            tunnel.forward_spec(),
+        ]
+        .into_iter()
+        .chain(tunnel.additional_arguments.clone())
+        .chain([tunnel.ssh_host.clone()])
+        .map(Into::into)
+        .collect();
         assert_eq!(parsed, expected);
+        let imported = crate::parser::parse(&command).unwrap();
+        assert_eq!(
+            imported,
+            crate::parser::ImportedTunnel {
+                local_port: tunnel.local_port,
+                destination_host: tunnel.destination_host.clone(),
+                destination_port: tunnel.destination_port,
+                ssh_host: tunnel.ssh_host.clone(),
+                bind_address: tunnel.bind_address.clone(),
+                additional_arguments: tunnel.additional_arguments.clone(),
+            }
+        );
+        let mut reimported = tunnel.clone();
+        reimported.additional_arguments = imported.additional_arguments;
+        assert!(reimported.is_safe_to_run());
+        assert_eq!(reimported.ssh_command(), command);
     }
 
     #[test]
