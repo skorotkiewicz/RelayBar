@@ -428,10 +428,12 @@ fn tunnel_row(
     let edit = gtk::Button::with_label("Edit");
     let edit_state = state.clone();
     let edit_window = window.clone();
-    let edit_popover = popover.clone();
+    let edit_popover = popover.downgrade();
     let editable = tunnel.clone();
     edit.connect_clicked(move |_| {
-        edit_popover.popdown();
+        if let Some(popover) = edit_popover.upgrade() {
+            popover.popdown();
+        }
         show_editor(&edit_window, &edit_state, Some(editable.clone()));
     });
     actions.append(&edit);
@@ -440,9 +442,11 @@ fn tunnel_row(
     let delete = gtk::Button::with_label("Delete");
     let delete_state = state.clone();
     let delete_window = window.clone();
-    let delete_popover = popover.clone();
+    let delete_popover = popover.downgrade();
     delete.connect_clicked(move |_| {
-        delete_popover.popdown();
+        if let Some(popover) = delete_popover.upgrade() {
+            popover.popdown();
+        }
         confirm_delete(&delete_window, &delete_state, &tunnel);
     });
     actions.append(&delete);
