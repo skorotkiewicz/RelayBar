@@ -131,6 +131,20 @@ impl Tunnel {
             && are_additional_arguments_safe(&self.additional_arguments)
     }
 
+    pub fn ssh_command(&self) -> String {
+        let arguments = self
+            .ssh_arguments()
+            .iter()
+            .map(|argument| {
+                gtk::glib::shell_quote(argument)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("ssh {arguments}")
+    }
+
     pub fn ssh_arguments(&self) -> Vec<String> {
         let mut arguments = vec![
             "-N".into(),
@@ -254,6 +268,26 @@ mod tests {
             "http://localhost:8080/"
         );
         assert_eq!(tunnel(Some("[::1]")).browser_url(), "http://[::1]:8080/");
+    }
+
+    #[test]
+    fn copied_command_preserves_arguments_without_shell_expansion() {
+        let mut tunnel = tunnel(Some("[::1]"));
+        tunnel.additional_arguments = vec![
+            "-i".into(),
+            "/tmp/key with 'quotes' $(touch unwanted); $HOME\\key".into(),
+            "-p".into(),
+            "2222".into(),
+        ];
+        let command = tunnel.ssh_command();
+        assert!(command.starts_with("ssh "));
+        assert!(command.contains("'\\''quotes'\\''"));
+        let parsed = gtk::glib::shell_parse_argv(&command).unwrap();
+        let expected: Vec<std::ffi::OsString> = std::iter::once("ssh".to_owned())
+            .chain(tunnel.ssh_arguments())
+            .map(Into::into)
+            .collect();
+        assert_eq!(parsed, expected);
     }
 
     #[test]

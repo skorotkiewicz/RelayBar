@@ -368,20 +368,18 @@ fn tunnel_row(
     row.append(&edit);
 
     let delete = gtk::Button::with_label("Delete");
-    delete.add_css_class("destructive-action");
     let delete_state = state.clone();
     let delete_window = window.clone();
-    delete.connect_clicked(move |_| {
-        delete_state.borrow_mut().delete(id);
-        render(&delete_window, &delete_state);
-    });
+    delete.connect_clicked(move |_| confirm_delete(&delete_window, &delete_state, &tunnel));
     row.append(&delete);
 
     let active = phase.is_active();
     let toggle = gtk::Button::with_label(if active { "Stop" } else { "Start" });
-    if !active {
-        toggle.add_css_class("suggested-action");
-    }
+    toggle.add_css_class(if active {
+        "destructive-action"
+    } else {
+        "suggested-action"
+    });
     let toggle_state = state.clone();
     let toggle_window = window.clone();
     toggle.connect_clicked(move |_| {
@@ -390,6 +388,39 @@ fn tunnel_row(
     });
     row.append(&toggle);
     row
+}
+
+fn confirm_delete(parent: &gtk::ApplicationWindow, state: &SharedStore, tunnel: &Tunnel) {
+    let dialog = gtk::Dialog::builder()
+        .title("Delete tunnel?")
+        .transient_for(parent)
+        .modal(true)
+        .build();
+    let message = gtk::Label::new(Some(&format!(
+        "Delete “{}”?\nThis stops the tunnel and removes its saved configuration.",
+        tunnel.display_name()
+    )));
+    message.set_wrap(true);
+    message.set_margin_top(16);
+    message.set_margin_bottom(16);
+    message.set_margin_start(16);
+    message.set_margin_end(16);
+    dialog.content_area().append(&message);
+    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+    dialog.add_button("Delete", gtk::ResponseType::Accept);
+    dialog.set_default_response(gtk::ResponseType::Cancel);
+
+    let state = state.clone();
+    let parent = parent.clone();
+    let id = tunnel.id;
+    dialog.connect_response(move |dialog, response| {
+        if response == gtk::ResponseType::Accept {
+            state.borrow_mut().delete(id);
+            render(&parent, &state);
+        }
+        dialog.close();
+    });
+    dialog.present();
 }
 
 fn phase_text(tunnel: &Tunnel, phase: &TunnelPhase) -> String {
@@ -538,6 +569,9 @@ fn show_editor(parent: &gtk::ApplicationWindow, state: &SharedStore, existing: O
 
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     actions.set_halign(gtk::Align::End);
+    let copy = gtk::Button::with_label("Copy SSH");
+    copy.set_tooltip_text(Some("Copy SSH command from the current fields"));
+    actions.append(&copy);
     let cancel = gtk::Button::with_label("Cancel");
     let editor_for_cancel = editor.clone();
     cancel.connect_clicked(move |_| editor_for_cancel.close());
@@ -555,7 +589,7 @@ fn show_editor(parent: &gtk::ApplicationWindow, state: &SharedStore, existing: O
     let parent_for_save = parent.clone();
     let editor_for_save = editor.clone();
     let state_for_save = state.clone();
-    save.connect_clicked(move |_| {
+    let read_tunnel = Rc::new(move || {
         let local = local_port
             .text()
             .parse::<u16>()
@@ -578,8 +612,9 @@ fn show_editor(parent: &gtk::ApplicationWindow, state: &SharedStore, existing: O
             validation_error
                 .set_text("Enter valid ports and hosts; imported SSH options must be safe.");
             validation_error.set_visible(true);
-            return;
+            return None;
         }
+        validation_error.set_visible(false);
 
         let mut tunnel = Tunnel::new(
             name.text().trim().to_owned(),
@@ -593,6 +628,18 @@ fn show_editor(parent: &gtk::ApplicationWindow, state: &SharedStore, existing: O
         }
         tunnel.bind_address = bind_address;
         tunnel.additional_arguments = additional_arguments;
+        Some(tunnel)
+    });
+    let read_for_copy = read_tunnel.clone();
+    copy.connect_clicked(move |button| {
+        if let Some(tunnel) = read_for_copy() {
+            button.clipboard().set_text(&tunnel.ssh_command());
+        }
+    });
+    save.connect_clicked(move |_| {
+        let Some(tunnel) = read_tunnel() else {
+            return;
+        };
         if saved_id.is_some() {
             state_for_save.borrow_mut().update(tunnel);
         } else {
@@ -669,6 +716,174 @@ fn left_label(text: &str) -> gtk::Label {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a display: cargo test tunnel_actions_copy_and_confirm_delete -- --ignored"]
+    fn tunnel_actions_copy_and_confirm_delete() {
+        gtk::test_synced(|| {
+            let app = gtk::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+            app.register(None::<&gio::Cancellable>).unwrap();
+            let window = gtk::ApplicationWindow::new(&app);
+            let path = std::env::temp_dir().join(format!("relaybar-ui-{}.json", Uuid::new_v4()));
+            let state = Rc::new(RefCell::new(Store::load(path.clone())));
+            let mut tunnel =
+                Tunnel::new("Test".into(), 8080, "localhost".into(), 80, "host".into());
+            tunnel.bind_address = Some("[::1]".into());
+            tunnel.additional_arguments = vec!["-i".into(), "/tmp/key with 'quotes'".into()];
+            state.borrow_mut().add(tunnel.clone());
+
+            for phase in [
+                TunnelPhase::Stopped,
+                TunnelPhase::Failed("Connection failed".into()),
+                TunnelPhase::Starting,
+                TunnelPhase::Running,
+                TunnelPhase::Retrying {
+                    attempt: 1,
+                    max_attempts: 10,
+                    delay_seconds: 1,
+                    message: "Retrying".into(),
+                },
+            ] {
+                let active = phase.is_active();
+                let row = tunnel_row(&window, &state, tunnel.clone(), phase);
+                let toggle = row.last_child().unwrap().downcast::<gtk::Button>().unwrap();
+                assert_eq!(
+                    toggle.label().as_deref(),
+                    Some(if active { "Stop" } else { "Start" })
+                );
+                assert_eq!(toggle.has_css_class("destructive-action"), active);
+                assert_eq!(toggle.has_css_class("suggested-action"), !active);
+            }
+
+            let row = tunnel_row(&window, &state, tunnel.clone(), TunnelPhase::Stopped);
+            let mut buttons = Vec::new();
+            let mut child = row.first_child();
+            while let Some(widget) = child {
+                child = widget.next_sibling();
+                if let Ok(button) = widget.downcast::<gtk::Button>() {
+                    buttons.push(button);
+                }
+            }
+            assert!(
+                buttons
+                    .iter()
+                    .all(|button| button.label().as_deref() != Some("Copy SSH"))
+            );
+            for existing in [None, Some(tunnel.clone())] {
+                let mut expected = existing.clone().unwrap_or_else(|| {
+                    Tunnel::new(String::new(), 8080, "localhost".into(), 80, "host".into())
+                });
+                show_editor(&window, &state, existing);
+                let editor = gtk::Window::list_toplevels()
+                    .into_iter()
+                    .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
+                    .find(|window| {
+                        matches!(
+                            window.title().as_deref(),
+                            Some("New Tunnel" | "Edit Tunnel")
+                        )
+                    })
+                    .unwrap();
+                let root = editor.child().unwrap();
+                let actions = root.last_child().unwrap();
+                let copy = actions
+                    .first_child()
+                    .unwrap()
+                    .downcast::<gtk::Button>()
+                    .unwrap();
+                assert_eq!(copy.label().as_deref(), Some("Copy SSH"));
+                let grid =
+                    std::iter::successors(root.first_child(), |widget| widget.next_sibling())
+                        .find_map(|widget| widget.downcast::<gtk::Grid>().ok())
+                        .unwrap();
+                let ssh_host = grid
+                    .child_at(1, 1)
+                    .unwrap()
+                    .downcast::<gtk::Entry>()
+                    .unwrap();
+                let local_port = grid
+                    .child_at(1, 2)
+                    .unwrap()
+                    .downcast::<gtk::Entry>()
+                    .unwrap();
+                let destination_host = grid
+                    .child_at(1, 3)
+                    .unwrap()
+                    .downcast::<gtk::Entry>()
+                    .unwrap();
+                let destination_port = grid
+                    .child_at(1, 4)
+                    .unwrap()
+                    .downcast::<gtk::Entry>()
+                    .unwrap();
+                let error = actions
+                    .prev_sibling()
+                    .unwrap()
+                    .downcast::<gtk::Label>()
+                    .unwrap();
+
+                copy.clipboard().set_text("unchanged");
+                local_port.set_text("0");
+                copy.emit_clicked();
+                assert!(error.is_visible());
+                let unchanged = glib::MainContext::default()
+                    .block_on(copy.clipboard().read_text_future())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(unchanged.as_str(), "unchanged");
+
+                ssh_host.set_text("ops@updated-host");
+                local_port.set_text("9090");
+                destination_host.set_text("::1");
+                destination_port.set_text("3000");
+                expected.ssh_host = "ops@updated-host".into();
+                expected.local_port = 9090;
+                expected.destination_host = "::1".into();
+                expected.destination_port = 3000;
+                copy.emit_clicked();
+                let copied = glib::MainContext::default()
+                    .block_on(copy.clipboard().read_text_future())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(copied.as_str(), expected.ssh_command());
+                assert!(!error.is_visible());
+                assert!(editor.is_visible());
+                assert_eq!(state.borrow().tunnels, [tunnel.clone()]);
+                assert_eq!(Store::load(path.clone()).tunnels, [tunnel.clone()]);
+                editor.close();
+            }
+
+            let delete = buttons
+                .iter()
+                .find(|button| button.label().as_deref() == Some("Delete"))
+                .unwrap();
+            assert!(!delete.has_css_class("destructive-action"));
+            for response in [
+                gtk::ResponseType::Cancel,
+                gtk::ResponseType::DeleteEvent,
+                gtk::ResponseType::Accept,
+            ] {
+                delete.emit_clicked();
+                let dialog = gtk::Window::list_toplevels()
+                    .into_iter()
+                    .filter_map(|widget| widget.downcast::<gtk::Dialog>().ok())
+                    .find(|dialog| dialog.is_visible())
+                    .unwrap();
+                assert!(dialog.is_modal());
+                assert_eq!(
+                    dialog.default_widget(),
+                    dialog.widget_for_response(gtk::ResponseType::Cancel)
+                );
+                assert_eq!(state.borrow().tunnels.len(), 1);
+                dialog.response(response);
+                let remaining = usize::from(response != gtk::ResponseType::Accept);
+                assert_eq!(state.borrow().tunnels.len(), remaining);
+                assert_eq!(Store::load(path.clone()).tunnels.len(), remaining);
+            }
+            window.close();
+            std::fs::remove_file(path).unwrap();
+        });
+    }
 
     #[test]
     fn tray_reports_activity_and_sends_commands() {
