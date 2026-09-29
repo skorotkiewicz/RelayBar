@@ -348,8 +348,44 @@ fn tunnel_row(
     details.append(&phase_text);
     row.append(&details);
 
-    let open = gtk::Button::with_label("Open");
-    open.set_tooltip_text(Some("Start if needed, then open the local URL"));
+    let active = phase.is_active();
+    let (toggle_icon, toggle_label) = if active {
+        ("media-playback-stop-symbolic", "Stop tunnel")
+    } else {
+        ("media-playback-start-symbolic", "Start tunnel")
+    };
+    // GTK Builder exposes accessible labels without requiring GTK 4.10.
+    let controls = gtk::Builder::from_string(&format!(
+        r#"<interface>
+          <object class="GtkButton" id="open">
+            <property name="icon-name">web-browser-symbolic</property>
+            <property name="tooltip-text">Start if needed, then open in browser</property>
+            <accessibility><property name="label">Open tunnel in browser</property></accessibility>
+          </object>
+          <object class="GtkMenuButton" id="menu">
+            <property name="icon-name">view-more-symbolic</property>
+            <property name="tooltip-text">Tunnel actions</property>
+            <accessibility><property name="label">Tunnel actions</property></accessibility>
+          </object>
+          <object class="GtkButton" id="toggle">
+            <property name="icon-name">{toggle_icon}</property>
+            <property name="tooltip-text">{toggle_label}</property>
+            <accessibility><property name="label">{toggle_label}</property></accessibility>
+          </object>
+        </interface>"#
+    ));
+    let open: gtk::Button = controls.object("open").unwrap();
+    let menu: gtk::MenuButton = controls.object("menu").unwrap();
+    let toggle: gtk::Button = controls.object("toggle").unwrap();
+    for button in [
+        open.upcast_ref::<gtk::Widget>(),
+        menu.upcast_ref(),
+        toggle.upcast_ref(),
+    ] {
+        button.set_valign(gtk::Align::Center);
+        button.add_css_class("circular");
+    }
+    menu.add_css_class("flat");
     let open_state = state.clone();
     let open_window = window.clone();
     let id = tunnel.id;
@@ -360,8 +396,12 @@ fn tunnel_row(
     });
     row.append(&open);
 
-    let copy = gtk::Button::with_label("Copy");
-    // let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
+    let popover = gtk::Popover::new();
+    let actions = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    popover.set_child(Some(&actions));
+    menu.set_popover(Some(&popover));
+
+    let copy = gtk::Button::with_label("Copy SSH");
     copy.set_tooltip_text(Some("Copy SSH command"));
     let command = tunnel.ssh_command();
     let reset = Rc::new(RefCell::new(None::<glib::SourceId>));
@@ -378,28 +418,39 @@ fn tunnel_row(
             move || {
                 reset_for_timeout.borrow_mut().take();
                 if let Some(button) = button.upgrade() {
-                    button.set_label("Copy");
+                    button.set_label("Copy SSH");
                 }
             },
         ));
     });
-    row.append(&copy);
+    actions.append(&copy);
 
     let edit = gtk::Button::with_label("Edit");
     let edit_state = state.clone();
     let edit_window = window.clone();
+    let edit_popover = popover.clone();
     let editable = tunnel.clone();
-    edit.connect_clicked(move |_| show_editor(&edit_window, &edit_state, Some(editable.clone())));
-    row.append(&edit);
+    edit.connect_clicked(move |_| {
+        edit_popover.popdown();
+        show_editor(&edit_window, &edit_state, Some(editable.clone()));
+    });
+    actions.append(&edit);
+    actions.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
 
     let delete = gtk::Button::with_label("Delete");
     let delete_state = state.clone();
     let delete_window = window.clone();
-    delete.connect_clicked(move |_| confirm_delete(&delete_window, &delete_state, &tunnel));
-    row.append(&delete);
+    let delete_popover = popover.clone();
+    delete.connect_clicked(move |_| {
+        delete_popover.popdown();
+        confirm_delete(&delete_window, &delete_state, &tunnel);
+    });
+    actions.append(&delete);
+    for button in [&copy, &edit, &delete] {
+        button.add_css_class("flat");
+    }
+    row.append(&menu);
 
-    let active = phase.is_active();
-    let toggle = gtk::Button::with_label(if active { "Stop" } else { "Start" });
     toggle.add_css_class(if active {
         "destructive-action"
     } else {
@@ -764,16 +815,46 @@ mod tests {
                 let row = tunnel_row(&window, &state, tunnel.clone(), phase);
                 let toggle = row.last_child().unwrap().downcast::<gtk::Button>().unwrap();
                 assert_eq!(
-                    toggle.label().as_deref(),
-                    Some(if active { "Stop" } else { "Start" })
+                    toggle.icon_name().as_deref(),
+                    Some(if active {
+                        "media-playback-stop-symbolic"
+                    } else {
+                        "media-playback-start-symbolic"
+                    })
+                );
+                assert_eq!(
+                    toggle.tooltip_text().as_deref(),
+                    Some(if active {
+                        "Stop tunnel"
+                    } else {
+                        "Start tunnel"
+                    })
                 );
                 assert_eq!(toggle.has_css_class("destructive-action"), active);
                 assert_eq!(toggle.has_css_class("suggested-action"), !active);
             }
 
             let row = tunnel_row(&window, &state, tunnel.clone(), TunnelPhase::Stopped);
+            let controls: Vec<_> =
+                std::iter::successors(row.first_child(), |widget| widget.next_sibling()).collect();
+            assert_eq!(controls.len(), 5); // Status, details, open, menu, toggle.
+            let open = controls[2].clone().downcast::<gtk::Button>().unwrap();
+            assert_eq!(open.icon_name().as_deref(), Some("web-browser-symbolic"));
+            assert_eq!(
+                open.tooltip_text().as_deref(),
+                Some("Start if needed, then open in browser")
+            );
+            let menu = controls[3].clone().downcast::<gtk::MenuButton>().unwrap();
+            assert_eq!(menu.icon_name().as_deref(), Some("view-more-symbolic"));
+            assert_eq!(menu.tooltip_text().as_deref(), Some("Tunnel actions"));
+            let popover = menu.popover().unwrap();
+            window.set_child(Some(&row));
+            window.present();
+            menu.popup();
+            assert!(popover.is_visible());
+            let actions = popover.child().unwrap();
             let mut buttons = Vec::new();
-            let mut child = row.first_child();
+            let mut child = actions.first_child();
             while let Some(widget) = child {
                 child = widget.next_sibling();
                 if let Ok(button) = widget.downcast::<gtk::Button>() {
@@ -782,7 +863,7 @@ mod tests {
             }
             let copy = buttons
                 .iter()
-                .find(|button| button.label().as_deref() == Some("Copy"))
+                .find(|button| button.label().as_deref() == Some("Copy SSH"))
                 .unwrap();
             assert_eq!(copy.tooltip_text().as_deref(), Some("Copy SSH command"));
             copy.emit_clicked();
@@ -798,7 +879,21 @@ mod tests {
             context.block_on(glib::timeout_future(Duration::from_millis(1100)));
             assert_eq!(copy.label().as_deref(), Some("Copied!"));
             context.block_on(glib::timeout_future(Duration::from_millis(1100)));
-            assert_eq!(copy.label().as_deref(), Some("Copy"));
+            assert_eq!(copy.label().as_deref(), Some("Copy SSH"));
+            assert_eq!(buttons.len(), 3);
+            let edit = buttons
+                .iter()
+                .find(|button| button.label().as_deref() == Some("Edit"))
+                .unwrap();
+            edit.emit_clicked();
+            assert!(!popover.is_visible());
+            let editor = gtk::Window::list_toplevels()
+                .into_iter()
+                .filter_map(|widget| widget.downcast::<gtk::Window>().ok())
+                .find(|window| window.title().as_deref() == Some("Edit Tunnel"))
+                .unwrap();
+            assert!(editor.is_modal());
+            editor.close();
 
             let delete = buttons
                 .iter()
@@ -810,7 +905,9 @@ mod tests {
                 gtk::ResponseType::DeleteEvent,
                 gtk::ResponseType::Accept,
             ] {
+                menu.popup();
                 delete.emit_clicked();
+                assert!(!popover.is_visible());
                 let dialog = gtk::Window::list_toplevels()
                     .into_iter()
                     .filter_map(|widget| widget.downcast::<gtk::Dialog>().ok())
