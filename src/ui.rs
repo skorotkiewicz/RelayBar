@@ -364,7 +364,25 @@ fn tunnel_row(
     // let copy = gtk::Button::from_icon_name("edit-copy-symbolic");
     copy.set_tooltip_text(Some("Copy SSH command"));
     let command = tunnel.ssh_command();
-    copy.connect_clicked(move |button| button.clipboard().set_text(&command));
+    let reset = Rc::new(RefCell::new(None::<glib::SourceId>));
+    copy.connect_clicked(move |button| {
+        button.clipboard().set_text(&command);
+        button.set_label("Copied!");
+        if let Some(timer) = reset.borrow_mut().take() {
+            timer.remove();
+        }
+        let button = button.downgrade();
+        let reset_for_timeout = reset.clone();
+        *reset.borrow_mut() = Some(glib::timeout_add_local_once(
+            Duration::from_secs(2),
+            move || {
+                reset_for_timeout.borrow_mut().take();
+                if let Some(button) = button.upgrade() {
+                    button.set_label("Copy");
+                }
+            },
+        ));
+    });
     row.append(&copy);
 
     let edit = gtk::Button::with_label("Edit");
@@ -768,11 +786,19 @@ mod tests {
                 .unwrap();
             assert_eq!(copy.tooltip_text().as_deref(), Some("Copy SSH command"));
             copy.emit_clicked();
+            assert_eq!(copy.label().as_deref(), Some("Copied!"));
             let copied = glib::MainContext::default()
                 .block_on(copy.clipboard().read_text_future())
                 .unwrap()
                 .unwrap();
             assert_eq!(copied.as_str(), tunnel.ssh_command());
+            let context = glib::MainContext::default();
+            context.block_on(glib::timeout_future(Duration::from_millis(1100)));
+            copy.emit_clicked();
+            context.block_on(glib::timeout_future(Duration::from_millis(1100)));
+            assert_eq!(copy.label().as_deref(), Some("Copied!"));
+            context.block_on(glib::timeout_future(Duration::from_millis(1100)));
+            assert_eq!(copy.label().as_deref(), Some("Copy"));
 
             let delete = buttons
                 .iter()
